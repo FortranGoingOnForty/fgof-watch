@@ -138,12 +138,38 @@ static int fgof_watch_append_text(fgof_watch_buffer *buffer, const char *text, s
     return 0;
 }
 
+static int fgof_watch_append_field(fgof_watch_buffer *buffer, const char *text, size_t text_len) {
+    static const char nul = '\0';
+    int status;
+
+    status = fgof_watch_append_text(buffer, text, text_len);
+    if (status != 0) {
+        return status;
+    }
+
+    return fgof_watch_append_text(buffer, &nul, 1);
+}
+
+static int fgof_watch_append_int64_field(fgof_watch_buffer *buffer, long long value) {
+    char text[64];
+    int text_len;
+
+    text_len = snprintf(text, sizeof(text), "%lld", value);
+    if (text_len < 0) {
+        return EINVAL;
+    }
+    if ((size_t)text_len >= sizeof(text)) {
+        return EOVERFLOW;
+    }
+
+    return fgof_watch_append_field(buffer, text, (size_t)text_len);
+}
+
 static int fgof_watch_append_entry(fgof_watch_buffer *buffer, const char *path, const struct stat *st) {
-    char line[4096];
     char kind;
-    int line_len;
     long long mtime_sec;
     long long mtime_nsec;
+    int status;
 
     if (S_ISDIR(st->st_mode)) {
         kind = 'D';
@@ -159,26 +185,28 @@ static int fgof_watch_append_entry(fgof_watch_buffer *buffer, const char *path, 
     mtime_nsec = (long long)st->st_mtim.tv_nsec;
 #endif
 
-    line_len = snprintf(
-        line,
-        sizeof(line),
-        "%c\t%lld\t%lld\t%lld\t%lld\t%s\n",
-        kind,
-        (long long)st->st_ino,
-        (long long)st->st_size,
-        mtime_sec,
-        mtime_nsec,
-        path
-    );
-
-    if (line_len < 0) {
-        return EINVAL;
+    status = fgof_watch_append_field(buffer, &kind, 1);
+    if (status != 0) {
+        return status;
     }
-    if ((size_t)line_len >= sizeof(line)) {
-        return EOVERFLOW;
+    status = fgof_watch_append_int64_field(buffer, (long long)st->st_ino);
+    if (status != 0) {
+        return status;
+    }
+    status = fgof_watch_append_int64_field(buffer, (long long)st->st_size);
+    if (status != 0) {
+        return status;
+    }
+    status = fgof_watch_append_int64_field(buffer, mtime_sec);
+    if (status != 0) {
+        return status;
+    }
+    status = fgof_watch_append_int64_field(buffer, mtime_nsec);
+    if (status != 0) {
+        return status;
     }
 
-    return fgof_watch_append_text(buffer, line, (size_t)line_len);
+    return fgof_watch_append_field(buffer, path, strlen(path));
 }
 
 static int fgof_watch_visit(
@@ -195,6 +223,7 @@ static int fgof_watch_visit(
     DIR *dirp;
     struct dirent *entry;
     struct stat st;
+    int status;
 
     if (fgof_watch_should_ignore(root, path, ignore_hidden, prefix_count, prefix_stride, prefixes)) {
         return 0;
@@ -207,8 +236,8 @@ static int fgof_watch_visit(
         return errno;
     }
 
-    if (fgof_watch_append_entry(buffer, path, &st) != 0) {
-        return -1;
+    if ((status = fgof_watch_append_entry(buffer, path, &st)) != 0) {
+        return status;
     }
 
     if (!S_ISDIR(st.st_mode)) {
@@ -230,8 +259,6 @@ static int fgof_watch_visit(
     while ((entry = readdir(dirp)) != NULL) {
         char *child;
         size_t child_len;
-        int status;
-
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }

@@ -7,11 +7,13 @@ program test_watch_filters
     expect_single_event, &
     make_dir, &
     remove_tree, &
+    touch_path, &
     write_text
   implicit none
 
   call test_ignore_hidden()
   call test_ignore_prefixes()
+  call test_ignore_prefix_literal_spaces()
   call test_directory_event_shaping()
 
 contains
@@ -56,7 +58,7 @@ contains
     call set_ignore_prefixes(options, [character(len=len(ignored_dir)) :: ignored_dir])
     call init_watch(session, root, options)
 
-    call write_text(ignored_path, "alpha")
+    call touch_path(ignored_path)
     events = poll_watch(session)
     call expect_no_events(events, "ignored prefix should suppress nested file creation")
 
@@ -70,6 +72,32 @@ contains
     call reset_watch(session)
     call remove_tree(root)
   end subroutine test_ignore_prefixes
+
+  subroutine test_ignore_prefix_literal_spaces()
+    character(len=*), parameter :: root = "build/watch-tests-prefix-literal-spaces"
+    character(len=:), allocatable :: ignored_path
+    character(len=*), parameter :: visible_path = "build/watch-tests-prefix-literal-spaces/main.txt"
+    type(watch_event), allocatable :: events(:)
+    type(watch_options) :: options
+    type(watch_session) :: session
+
+    call ensure_clean_dir(root)
+
+    ignored_path = root // "/skip "
+    call set_ignore_prefixes(options, [ignored_path])
+    call init_watch(session, root, options)
+
+    call touch_path(ignored_path)
+    events = poll_watch(session)
+    call expect_no_events(events, "ignore prefix should preserve trailing spaces literally")
+
+    call write_text(visible_path, "beta")
+    events = poll_watch(session)
+    call expect_single_event(events, FGOF_WATCH_EVT_CREATED, visible_path, "", .false., "visible file outside literal-space prefix should still be reported")
+
+    call reset_watch(session)
+    call remove_tree(root)
+  end subroutine test_ignore_prefix_literal_spaces
 
   subroutine test_directory_event_shaping()
     character(len=*), parameter :: root = "build/watch-tests-directory-events"

@@ -160,8 +160,10 @@ contains
 
     width = max(1, max_string_length(prefixes))
     allocate(character(len=width) :: options%ignore_prefixes(size(prefixes)))
+    allocate(options%ignore_prefix_lengths(size(prefixes)))
     do i = 1, size(prefixes)
       options%ignore_prefixes(i) = prefixes(i)
+      options%ignore_prefix_lengths(i) = len(prefixes(i))
     end do
   end subroutine set_ignore_prefixes
 
@@ -170,6 +172,9 @@ contains
 
     if (allocated(options%ignore_prefixes)) then
       deallocate(options%ignore_prefixes)
+    end if
+    if (allocated(options%ignore_prefix_lengths)) then
+      deallocate(options%ignore_prefix_lengths)
     end if
   end subroutine clear_ignore_prefixes
 
@@ -187,7 +192,6 @@ contains
     integer(c_int) :: prefix_count
     integer(c_int) :: prefix_stride
     character(kind=c_char), pointer :: raw_chars(:)
-    character(len=:), allocatable :: text
 
     c_root = to_c_string(root)
     call pack_ignore_prefixes(options, prefix_count, prefix_stride, c_prefixes)
@@ -221,10 +225,9 @@ contains
     end if
 
     call c_f_pointer(raw_ptr, raw_chars, [int(raw_len)])
-    text = buffer_to_text(raw_chars, int(raw_len))
+    call parse_snapshot_buffer(raw_chars, int(raw_len), entries)
     call fgof_watch_free_buffer_c(raw_ptr)
 
-    call parse_snapshot_text(text, entries)
     call filter_entries(root, options, entries)
     call sort_entries(entries)
   end subroutine collect_snapshot
@@ -261,10 +264,10 @@ contains
 
     do i = 1, size(options%ignore_prefixes)
       offset = (i - 1) * width
-      do j = 1, len_trim(options%ignore_prefixes(i))
+      do j = 1, ignore_prefix_length(options, i)
         buffer(offset + j) = options%ignore_prefixes(i)(j:j)
       end do
-      buffer(offset + len_trim(options%ignore_prefixes(i)) + 1) = c_null_char
+      buffer(offset + ignore_prefix_length(options, i) + 1) = c_null_char
     end do
   end subroutine pack_ignore_prefixes
 
@@ -306,26 +309,39 @@ contains
     type(watch_options), intent(in) :: options
     character(len=*), intent(in) :: path
     integer :: i
-    character(len=:), allocatable :: prefix
+    integer :: prefix_len
 
     matches = .false.
     if (.not. allocated(options%ignore_prefixes)) return
 
     do i = 1, size(options%ignore_prefixes)
-      prefix = trim(options%ignore_prefixes(i))
-      if (len(prefix) == 0) cycle
-      if (path == prefix) then
-        matches = .true.
-        return
+      prefix_len = ignore_prefix_length(options, i)
+      if (prefix_len == 0) cycle
+      if (len(path) == prefix_len) then
+        if (path == options%ignore_prefixes(i)(1:prefix_len)) then
+          matches = .true.
+          return
+        end if
       end if
-      if (len(path) > len(prefix)) then
-        if (path(1:len(prefix)) == prefix .and. path(len(prefix) + 1:len(prefix) + 1) == "/") then
+      if (len(path) > prefix_len) then
+        if (path(1:prefix_len) == options%ignore_prefixes(i)(1:prefix_len) .and. path(prefix_len + 1:prefix_len + 1) == "/") then
           matches = .true.
           return
         end if
       end if
     end do
   end function path_matches_ignore_prefix
+
+  integer function ignore_prefix_length(options, index_value) result(length_value)
+    type(watch_options), intent(in) :: options
+    integer, intent(in) :: index_value
+
+    if (allocated(options%ignore_prefix_lengths)) then
+      length_value = options%ignore_prefix_lengths(index_value)
+    else
+      length_value = len_trim(options%ignore_prefixes(index_value))
+    end if
+  end function ignore_prefix_length
 
   function path_after_root(root, path) result(relative)
     character(len=*), intent(in) :: root
@@ -752,105 +768,118 @@ contains
     if (previous_entry%is_directory .neqv. current_entry%is_directory) changed = .true.
   end function entry_changed
 
-  subroutine parse_snapshot_text(text, entries)
-    character(len=*), intent(in) :: text
+  subroutine parse_snapshot_buffer(buffer, count, entries)
+    character(kind=c_char), intent(in) :: buffer(:)
+    integer, intent(in) :: count
     type(watch_entry), allocatable, intent(out) :: entries(:)
-    integer :: count
     integer :: i
+    integer :: field_count
+    integer :: record_count
     integer :: start
-    integer :: n
+    integer :: terminator_index
+    character(len=:), allocatable :: kind_text
+    character(len=:), allocatable :: inode_text
+    character(len=:), allocatable :: size_text
+    character(len=:), allocatable :: mtime_sec_text
+    character(len=:), allocatable :: mtime_nsec_text
+    character(len=:), allocatable :: path_text
 
-    n = len(text)
-    if (n == 0) then
+    if (count <= 0) then
       allocate(entries(0))
       return
     end if
 
-    count = 0
-    do i = 1, n
-      if (text(i:i) == new_line("a")) count = count + 1
+    field_count = 0
+    do i = 1, count
+      if (buffer(i) == c_null_char) field_count = field_count + 1
     end do
-    if (text(n:n) /= new_line("a")) count = count + 1
-
-    allocate(entries(count))
-    count = 0
-    start = 1
-    do i = 1, n
-      if (text(i:i) /= new_line("a")) cycle
-      count = count + 1
-      call parse_snapshot_line(text(start:i - 1), entries(count))
-      start = i + 1
-    end do
-
-    if (start <= n) then
-      count = count + 1
-      call parse_snapshot_line(text(start:n), entries(count))
+    if (field_count == 0 .or. mod(field_count, 6) /= 0) then
+      allocate(entries(0))
+      return
     end if
-  end subroutine parse_snapshot_text
 
-  subroutine parse_snapshot_line(line, entry)
-    character(len=*), intent(in) :: line
+    record_count = field_count / 6
+    allocate(entries(record_count))
+    start = 1
+    do i = 1, record_count
+      call next_nul_field(buffer, count, start, kind_text, terminator_index)
+      if (terminator_index == 0) exit
+      call next_nul_field(buffer, count, start, inode_text, terminator_index)
+      if (terminator_index == 0) exit
+      call next_nul_field(buffer, count, start, size_text, terminator_index)
+      if (terminator_index == 0) exit
+      call next_nul_field(buffer, count, start, mtime_sec_text, terminator_index)
+      if (terminator_index == 0) exit
+      call next_nul_field(buffer, count, start, mtime_nsec_text, terminator_index)
+      if (terminator_index == 0) exit
+      call next_nul_field(buffer, count, start, path_text, terminator_index)
+      if (terminator_index == 0) exit
+      call parse_snapshot_fields(kind_text, inode_text, size_text, mtime_sec_text, mtime_nsec_text, path_text, entries(i))
+    end do
+  end subroutine parse_snapshot_buffer
+
+  subroutine parse_snapshot_fields(kind_text, inode_text, size_text, mtime_sec_text, mtime_nsec_text, path_text, entry)
+    character(len=*), intent(in) :: kind_text
+    character(len=*), intent(in) :: inode_text
+    character(len=*), intent(in) :: size_text
+    character(len=*), intent(in) :: mtime_sec_text
+    character(len=*), intent(in) :: mtime_nsec_text
+    character(len=*), intent(in) :: path_text
     type(watch_entry), intent(out) :: entry
-    integer :: tab1
-    integer :: tab2
-    integer :: tab3
-    integer :: tab4
-    integer :: tab5
+    integer :: iostat_value
 
-    tab1 = index(line, achar(9))
-    tab2 = next_tab(line, tab1 + 1)
-    tab3 = next_tab(line, tab2 + 1)
-    tab4 = next_tab(line, tab3 + 1)
-    tab5 = next_tab(line, tab4 + 1)
-
-    if (tab1 <= 0 .or. tab2 <= 0 .or. tab3 <= 0 .or. tab4 <= 0 .or. tab5 <= 0) then
-      entry = watch_entry()
+    entry = watch_entry()
+    if (len(kind_text) == 0) then
       entry%path = ""
       return
     end if
 
-    entry%is_directory = (line(1:1) == "D")
-    read(line(tab1 + 1:tab2 - 1), *) entry%inode
-    read(line(tab2 + 1:tab3 - 1), *) entry%size
-    read(line(tab3 + 1:tab4 - 1), *) entry%mtime_sec
-    read(line(tab4 + 1:tab5 - 1), *) entry%mtime_nsec
-    entry%path = line(tab5 + 1:)
-  end subroutine parse_snapshot_line
+    entry%is_directory = (kind_text(1:1) == "D")
+    read(inode_text, *, iostat=iostat_value) entry%inode
+    if (iostat_value /= 0) entry%inode = 0
+    read(size_text, *, iostat=iostat_value) entry%size
+    if (iostat_value /= 0) entry%size = 0
+    read(mtime_sec_text, *, iostat=iostat_value) entry%mtime_sec
+    if (iostat_value /= 0) entry%mtime_sec = 0
+    read(mtime_nsec_text, *, iostat=iostat_value) entry%mtime_nsec
+    if (iostat_value /= 0) entry%mtime_nsec = 0
+    entry%path = path_text
+  end subroutine parse_snapshot_fields
 
-  integer function next_tab(line, start_index) result(position)
-    character(len=*), intent(in) :: line
-    integer, intent(in) :: start_index
-    integer :: offset
-
-    if (start_index > len(line)) then
-      position = 0
-      return
-    end if
-
-    offset = index(line(start_index:), achar(9))
-    if (offset == 0) then
-      position = 0
-    else
-      position = start_index + offset - 1
-    end if
-  end function next_tab
-
-  function buffer_to_text(buffer, count) result(text)
+  subroutine next_nul_field(buffer, count, start_index, field, terminator_index)
     character(kind=c_char), intent(in) :: buffer(:)
     integer, intent(in) :: count
-    character(len=:), allocatable :: text
+    integer, intent(inout) :: start_index
+    character(len=:), allocatable, intent(out) :: field
+    integer, intent(out) :: terminator_index
     integer :: i
+    integer :: width
 
-    if (count <= 0) then
-      text = ""
+    if (start_index > count) then
+      field = ""
+      terminator_index = 0
       return
     end if
 
-    allocate(character(len=count) :: text)
-    do i = 1, count
-      text(i:i) = char(iachar(buffer(i)))
+    terminator_index = 0
+    do i = start_index, count
+      if (buffer(i) == c_null_char) then
+        terminator_index = i
+        exit
+      end if
     end do
-  end function buffer_to_text
+    if (terminator_index == 0) then
+      field = ""
+      return
+    end if
+
+    width = terminator_index - start_index
+    allocate(character(len=width) :: field)
+    do i = 1, width
+      field(i:i) = char(iachar(buffer(start_index + i - 1)))
+    end do
+    start_index = terminator_index + 1
+  end subroutine next_nul_field
 
   function errno_message(prefix, errnum) result(message)
     character(len=*), intent(in) :: prefix

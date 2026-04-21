@@ -12,6 +12,7 @@ module watch_test_support
   public :: move_path
   public :: remove_path
   public :: remove_tree
+  public :: touch_path
   public :: write_text
 
 contains
@@ -47,6 +48,12 @@ contains
 
     call run_command("rm -f " // path)
   end subroutine remove_path
+
+  subroutine touch_path(path)
+    character(len=*), intent(in) :: path
+
+    call run_command("touch " // shell_quote(path))
+  end subroutine touch_path
 
   subroutine move_path(source, destination)
     character(len=*), intent(in) :: source
@@ -104,5 +111,21 @@ contains
     call execute_command_line(command, exitstat=exitstat)
     if (exitstat /= 0) error stop "command failed: " // trim(command)
   end subroutine run_command
+
+  function shell_quote(text) result(quoted)
+    character(len=*), intent(in) :: text
+    character(len=:), allocatable :: quoted
+    integer :: i
+
+    quoted = "'"
+    do i = 1, len(text)
+      if (text(i:i) == "'") then
+        quoted = quoted // achar(39) // achar(34) // achar(39) // achar(34) // achar(39)
+      else
+        quoted = quoted // text(i:i)
+      end if
+    end do
+    quoted = quoted // "'"
+  end function shell_quote
 
 end module watch_test_support

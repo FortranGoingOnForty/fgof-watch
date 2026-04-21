@@ -29,6 +29,7 @@ module fgof_watch_types
     logical :: ignore_hidden = .false.
     logical :: emit_directory_events = .true.
     character(len=:), allocatable :: ignore_prefixes(:)
+    integer, allocatable :: ignore_prefix_lengths(:)
   end type watch_options
 
   type :: watch_entry
