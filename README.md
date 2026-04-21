@@ -35,12 +35,13 @@ Implemented today:
 - recursive and nonrecursive polling behavior
 - hidden-path filtering and ignored-prefix filtering
 - optional suppression of directory create or remove noise
+- debounce-based quieting for bursty paths
 - smoke-test and change-detection coverage with CI wiring
 
 Still to implement:
 
-- debounce and event coalescing helpers
 - native backend strategy
+- further event coalescing and policy helpers
 
 ## Why Use It
 
@@ -90,6 +91,7 @@ program demo_watch
   type(watch_options) :: options
   type(watch_session) :: session
 
+  options%debounce_polls = 1
   options%ignore_hidden = .true.
   options%emit_directory_events = .false.
   call set_ignore_prefixes(options, [character(len=9) :: "src/.git"])
@@ -118,7 +120,7 @@ That is the baseline verification command locally and in CI.
 - focused on reusable watch primitives, not a full dev-loop tool
 - polling will be the first dependable backend; native backends can come later without changing the high-level surface
 - the current polling backend reports event batches and suppresses directory-only metadata churn, so nested file activity is the signal that rises to the top
-- current shaping controls include `ignore_hidden`, ignored path prefixes, and `emit_directory_events`
+- current shaping controls include `debounce_polls`, `ignore_hidden`, ignored path prefixes, and `emit_directory_events`
 
 ## License
 
