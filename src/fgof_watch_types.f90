@@ -8,6 +8,8 @@ module fgof_watch_types
   integer, parameter, public :: FGOF_WATCH_EVT_MODIFIED = 2
   integer, parameter, public :: FGOF_WATCH_EVT_REMOVED = 3
   integer, parameter, public :: FGOF_WATCH_EVT_MOVED = 4
+  integer, parameter, public :: FGOF_WATCH_ERR_NONE = 0
+  integer, parameter, public :: FGOF_WATCH_ERR_SNAPSHOT_FAILED = 1
 
   public :: watch_event
   public :: watch_entry
@@ -22,7 +24,6 @@ module fgof_watch_types
   end type watch_event
 
   type :: watch_options
-    integer :: poll_interval_ms = 250
     integer :: debounce_polls = 0
     logical :: recursive = .true.
     logical :: ignore_hidden = .false.
@@ -43,8 +44,10 @@ module fgof_watch_types
     character(len=:), allocatable :: root
     type(watch_options) :: options
     logical :: active = .false.
+    integer :: last_error_code = FGOF_WATCH_ERR_NONE
     type(watch_entry), allocatable :: entries(:)
     type(watch_event), allocatable :: pending_events(:)
     integer, allocatable :: pending_remaining(:)
+    character(len=:), allocatable :: last_error_message
   end type watch_session
 end module fgof_watch_types

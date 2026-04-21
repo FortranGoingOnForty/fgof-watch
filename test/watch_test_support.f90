@@ -4,6 +4,7 @@ module watch_test_support
   private
 
   public :: append_text
+  public :: chmod_mode
   public :: ensure_clean_dir
   public :: expect_no_events
   public :: expect_single_event
@@ -21,6 +22,13 @@ contains
     call remove_tree(path)
     call make_dir(path)
   end subroutine ensure_clean_dir
+
+  subroutine chmod_mode(path, mode)
+    character(len=*), intent(in) :: path
+    character(len=*), intent(in) :: mode
+
+    call run_command("chmod " // mode // " " // path)
+  end subroutine chmod_mode
 
   subroutine make_dir(path)
     character(len=*), intent(in) :: path

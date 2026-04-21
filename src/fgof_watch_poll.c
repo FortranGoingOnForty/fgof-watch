@@ -33,7 +33,7 @@ static int fgof_watch_append_text(fgof_watch_buffer *buffer, const char *text, s
 
     grown = (char *)realloc(buffer->data, cap);
     if (grown == NULL) {
-        return -1;
+        return ENOMEM;
     }
 
     buffer->data = grown;
@@ -77,10 +77,10 @@ static int fgof_watch_append_entry(fgof_watch_buffer *buffer, const char *path, 
     );
 
     if (line_len < 0) {
-        return -1;
+        return EINVAL;
     }
     if ((size_t)line_len >= sizeof(line)) {
-        return -1;
+        return EOVERFLOW;
     }
 
     return fgof_watch_append_text(buffer, line, (size_t)line_len);
@@ -92,7 +92,10 @@ static int fgof_watch_visit(const char *path, int recursive, int depth, fgof_wat
     struct stat st;
 
     if (lstat(path, &st) != 0) {
-        return 0;
+        if (errno == ENOENT || errno == ENOTDIR) {
+            return 0;
+        }
+        return errno;
     }
 
     if (fgof_watch_append_entry(buffer, path, &st) != 0) {
@@ -109,7 +112,10 @@ static int fgof_watch_visit(const char *path, int recursive, int depth, fgof_wat
 
     dirp = opendir(path);
     if (dirp == NULL) {
-        return 0;
+        if (errno == ENOENT || errno == ENOTDIR) {
+            return 0;
+        }
+        return errno;
     }
 
     while ((entry = readdir(dirp)) != NULL) {
@@ -125,7 +131,7 @@ static int fgof_watch_visit(const char *path, int recursive, int depth, fgof_wat
         child = (char *)malloc(child_len);
         if (child == NULL) {
             closedir(dirp);
-            return -1;
+            return ENOMEM;
         }
 
         snprintf(child, child_len, "%s/%s", path, entry->d_name);

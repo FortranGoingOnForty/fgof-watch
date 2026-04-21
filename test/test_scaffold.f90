@@ -4,17 +4,18 @@ program test_scaffold
   implicit none
 
   type(watch_event), allocatable :: events(:)
-  type(watch_options) :: options
   type(watch_session) :: session
 
-  options = watch_options(poll_interval_ms=100, recursive=.false.)
+  type(watch_options) :: options
+
+  options = watch_options(recursive=.false.)
   call init_watch(session, "src", options)
 
   if (.not. session%active) error stop "watch session should be active"
   if (.not. allocated(session%root)) error stop "watch root should be allocated"
   if (session%root /= "src") error stop "watch root should match init input"
-  if (session%options%poll_interval_ms /= 100) error stop "poll interval should be stored"
   if (session%options%recursive) error stop "recursive flag should follow options"
+  if (session%last_error_code /= 0) error stop "fresh session should start without an error"
 
   events = poll_watch(session)
   if (.not. allocated(events)) error stop "poll should always allocate an event batch"

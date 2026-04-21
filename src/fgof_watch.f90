@@ -1,6 +1,8 @@
 module fgof_watch
   use, intrinsic :: iso_c_binding, only : c_associated, c_char, c_f_pointer, c_int, c_null_char, c_null_ptr, c_ptr, c_size_t
   use fgof_watch_types, only : &
+    FGOF_WATCH_ERR_NONE, &
+    FGOF_WATCH_ERR_SNAPSHOT_FAILED, &
     FGOF_WATCH_EVT_CREATED, &
     FGOF_WATCH_EVT_MODIFIED, &
     FGOF_WATCH_EVT_MOVED, &
@@ -40,6 +42,8 @@ contains
     type(watch_session), intent(out) :: session
     character(len=*), intent(in) :: root
     type(watch_options), intent(in), optional :: options
+    integer :: snapshot_status
+    character(len=:), allocatable :: snapshot_message
 
     if (present(options)) then
       session%options = options
@@ -52,25 +56,42 @@ contains
       allocate(session%entries(0))
       allocate(session%pending_events(0))
       allocate(session%pending_remaining(0))
+      call clear_watch_error(session)
       return
     end if
 
-    call collect_snapshot(root, session%options, session%entries)
+    call collect_snapshot(root, session%options, session%entries, snapshot_status, snapshot_message)
     allocate(session%pending_events(0))
     allocate(session%pending_remaining(0))
+    if (snapshot_status /= 0) then
+      call set_watch_error(session, FGOF_WATCH_ERR_SNAPSHOT_FAILED, snapshot_message)
+      deallocate(session%entries)
+      allocate(session%entries(0))
+    else
+      call clear_watch_error(session)
+    end if
   end subroutine init_watch
 
   function poll_watch(session) result(events)
     type(watch_session), intent(inout) :: session
     type(watch_event), allocatable :: events(:)
     type(watch_entry), allocatable :: current_entries(:)
+    integer :: snapshot_status
+    character(len=:), allocatable :: snapshot_message
 
     if (.not. session%active) then
       allocate(events(0))
       return
     end if
 
-    call collect_snapshot(session%root, session%options, current_entries)
+    call collect_snapshot(session%root, session%options, current_entries, snapshot_status, snapshot_message)
+    if (snapshot_status /= 0) then
+      call set_watch_error(session, FGOF_WATCH_ERR_SNAPSHOT_FAILED, snapshot_message)
+      allocate(events(0))
+      return
+    end if
+
+    call clear_watch_error(session)
     events = diff_snapshots(session%entries, current_entries, session%options)
     if (session%options%debounce_polls > 0) then
       events = debounce_event_batch(session, events)
@@ -99,7 +120,30 @@ contains
 
     session%options = watch_options()
     session%active = .false.
+    call clear_watch_error(session)
   end subroutine reset_watch
+
+  subroutine clear_watch_error(session)
+    type(watch_session), intent(inout) :: session
+
+    session%last_error_code = FGOF_WATCH_ERR_NONE
+    if (allocated(session%last_error_message)) then
+      deallocate(session%last_error_message)
+    end if
+    session%last_error_message = ""
+  end subroutine clear_watch_error
+
+  subroutine set_watch_error(session, code, message)
+    type(watch_session), intent(inout) :: session
+    integer, intent(in) :: code
+    character(len=*), intent(in) :: message
+
+    session%last_error_code = code
+    if (allocated(session%last_error_message)) then
+      deallocate(session%last_error_message)
+    end if
+    session%last_error_message = trim(message)
+  end subroutine set_watch_error
 
   subroutine set_ignore_prefixes(options, prefixes)
     type(watch_options), intent(inout) :: options
@@ -125,10 +169,12 @@ contains
     end if
   end subroutine clear_ignore_prefixes
 
-  subroutine collect_snapshot(root, options, entries)
+  subroutine collect_snapshot(root, options, entries, status_code, status_message)
     character(len=*), intent(in) :: root
     type(watch_options), intent(in) :: options
     type(watch_entry), allocatable, intent(out) :: entries(:)
+    integer, intent(out) :: status_code
+    character(len=:), allocatable, intent(out) :: status_message
     type(c_ptr) :: raw_ptr
     integer(c_int) :: status
     integer(c_size_t) :: raw_len
@@ -139,11 +185,15 @@ contains
     c_root = to_c_string(root)
     raw_ptr = c_null_ptr
     raw_len = 0_c_size_t
+    status_code = 0
+    status_message = ""
 
     status = fgof_watch_collect_snapshot_c(c_root, merge(1_c_int, 0_c_int, options%recursive), raw_ptr, raw_len)
     if (status /= 0_c_int) then
       allocate(entries(0))
       if (c_associated(raw_ptr)) call fgof_watch_free_buffer_c(raw_ptr)
+      status_code = int(status)
+      status_message = errno_message("snapshot collection failed", int(status))
       return
     end if
 
@@ -745,6 +795,16 @@ contains
       text(i:i) = char(iachar(buffer(i)))
     end do
   end function buffer_to_text
+
+  function errno_message(prefix, errnum) result(message)
+    character(len=*), intent(in) :: prefix
+    integer, intent(in) :: errnum
+    character(len=:), allocatable :: message
+    character(len=32) :: code_text
+
+    write(code_text, '(I0)') errnum
+    message = trim(prefix) // " (errno=" // trim(code_text) // ")"
+  end function errno_message
 
   function to_c_string(str) result(buf)
     character(len=*), intent(in) :: str
