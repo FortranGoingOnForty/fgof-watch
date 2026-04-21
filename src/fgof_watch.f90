@@ -1,5 +1,5 @@
 module fgof_watch
-  use fgof_watch_types, only : FGOF_WATCH_EVT_NONE, watch_event, watch_options, watch_session
+  use fgof_watch_types, only : watch_event, watch_options, watch_session
   implicit none
   private
 
@@ -19,19 +19,20 @@ contains
     end if
 
     session%root = root
-    session%active = len_trim(root) > 0
+    session%active = len(root) > 0
+    allocate(session%entries(0))
   end subroutine init_watch
 
-  function poll_watch(session) result(event)
-    type(watch_session), intent(in) :: session
-    type(watch_event) :: event
+  function poll_watch(session) result(events)
+    type(watch_session), intent(inout) :: session
+    type(watch_event), allocatable :: events(:)
 
-    event%kind = FGOF_WATCH_EVT_NONE
-    if (allocated(session%root)) then
-      event%path = session%root
-    else
-      event%path = ""
+    if (.not. session%active) then
+      allocate(events(0))
+      return
     end if
+
+    allocate(events(0))
   end function poll_watch
 
   subroutine reset_watch(session)
@@ -39,6 +40,10 @@ contains
 
     if (allocated(session%root)) then
       deallocate(session%root)
+    end if
+
+    if (allocated(session%entries)) then
+      deallocate(session%entries)
     end if
 
     session%options = watch_options()
