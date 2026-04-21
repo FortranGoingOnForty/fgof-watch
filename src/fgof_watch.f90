@@ -67,7 +67,7 @@ contains
     end if
 
     call collect_snapshot(session%root, session%options, current_entries)
-    events = diff_snapshots(session%entries, current_entries)
+    events = diff_snapshots(session%entries, current_entries, session%options)
     call move_alloc(current_entries, session%entries)
   end function poll_watch
 
@@ -264,9 +264,10 @@ contains
     name = path
   end function basename_text
 
-  function diff_snapshots(previous_entries, current_entries) result(events)
+  function diff_snapshots(previous_entries, current_entries, options) result(events)
     type(watch_entry), intent(in) :: previous_entries(:)
     type(watch_entry), intent(in) :: current_entries(:)
+    type(watch_options), intent(in) :: options
     type(watch_event), allocatable :: events(:)
     type(watch_entry), allocatable :: created(:)
     type(watch_entry), allocatable :: modified(:)
@@ -304,14 +305,15 @@ contains
       end if
     end do
 
-    events = build_event_batch(created, modified, removed)
+    events = build_event_batch(created, modified, removed, options)
     call sort_events(events)
   end function diff_snapshots
 
-  function build_event_batch(created, modified, removed) result(events)
+  function build_event_batch(created, modified, removed, options) result(events)
     type(watch_entry), intent(in) :: created(:)
     type(watch_entry), intent(in) :: modified(:)
     type(watch_entry), intent(in) :: removed(:)
+    type(watch_options), intent(in) :: options
     type(watch_event), allocatable :: events(:)
     logical, allocatable :: created_used(:)
     logical, allocatable :: removed_used(:)
@@ -330,6 +332,11 @@ contains
         if (removed(i)%inode <= 0) cycle
         if (removed(i)%inode /= created(j)%inode) cycle
         if (removed(i)%is_directory .neqv. created(j)%is_directory) cycle
+        if (created(j)%is_directory .and. .not. options%emit_directory_events) then
+          created_used(j) = .true.
+          removed_used(i) = .true.
+          exit
+        end if
         call append_event(events, FGOF_WATCH_EVT_MOVED, created(j)%path, removed(i)%path, created(j)%is_directory)
         created_used(j) = .true.
         removed_used(i) = .true.
@@ -339,15 +346,18 @@ contains
 
     do i = 1, size(created)
       if (created_used(i)) cycle
+      if (created(i)%is_directory .and. .not. options%emit_directory_events) cycle
       call append_event(events, FGOF_WATCH_EVT_CREATED, created(i)%path, "", created(i)%is_directory)
     end do
 
     do i = 1, size(modified)
+      if (modified(i)%is_directory .and. .not. options%emit_directory_events) cycle
       call append_event(events, FGOF_WATCH_EVT_MODIFIED, modified(i)%path, "", modified(i)%is_directory)
     end do
 
     do i = 1, size(removed)
       if (removed_used(i)) cycle
+      if (removed(i)%is_directory .and. .not. options%emit_directory_events) cycle
       call append_event(events, FGOF_WATCH_EVT_REMOVED, removed(i)%path, "", removed(i)%is_directory)
     end do
   end function build_event_batch

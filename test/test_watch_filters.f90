@@ -12,6 +12,7 @@ program test_watch_filters
 
   call test_ignore_hidden()
   call test_ignore_prefixes()
+  call test_directory_event_shaping()
 
 contains
 
@@ -69,5 +70,30 @@ contains
     call reset_watch(session)
     call remove_tree(root)
   end subroutine test_ignore_prefixes
+
+  subroutine test_directory_event_shaping()
+    character(len=*), parameter :: root = "build/watch-tests-directory-events"
+    character(len=*), parameter :: child_dir = "build/watch-tests-directory-events/child"
+    character(len=*), parameter :: child_file = "build/watch-tests-directory-events/child/file.txt"
+    type(watch_event), allocatable :: events(:)
+    type(watch_options) :: options
+    type(watch_session) :: session
+
+    call ensure_clean_dir(root)
+
+    options = watch_options(emit_directory_events=.false.)
+    call init_watch(session, root, options)
+
+    call make_dir(child_dir)
+    events = poll_watch(session)
+    call expect_no_events(events, "directory creation should be suppressible")
+
+    call write_text(child_file, "alpha")
+    events = poll_watch(session)
+    call expect_single_event(events, FGOF_WATCH_EVT_CREATED, child_file, "", .false., "descendant file creation should still be reported")
+
+    call reset_watch(session)
+    call remove_tree(root)
+  end subroutine test_directory_event_shaping
 
 end program test_watch_filters
