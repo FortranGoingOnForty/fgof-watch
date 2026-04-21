@@ -33,11 +33,12 @@ Implemented today:
 - initialization, reset, and batch polling helpers
 - normalized create, modify, remove, and move events
 - recursive and nonrecursive polling behavior
+- hidden-path filtering and ignored-prefix filtering
+- optional suppression of directory create or remove noise
 - smoke-test and change-detection coverage with CI wiring
 
 Still to implement:
 
-- filtering and ignore rules
 - debounce and event coalescing helpers
 - native backend strategy
 
@@ -63,9 +64,11 @@ Public types:
 
 Current public procedures:
 
+- `clear_ignore_prefixes`
 - `init_watch`
 - `poll_watch`
 - `reset_watch`
+- `set_ignore_prefixes`
 
 Event constants:
 
@@ -79,14 +82,18 @@ Event constants:
 
 ```fortran
 program demo_watch
-  use fgof_watch, only : init_watch, poll_watch
-  use fgof_watch_types, only : watch_event, watch_session
+  use fgof_watch, only : init_watch, poll_watch, set_ignore_prefixes
+  use fgof_watch_types, only : watch_event, watch_options, watch_session
   implicit none
 
   type(watch_event), allocatable :: events(:)
+  type(watch_options) :: options
   type(watch_session) :: session
 
-  call init_watch(session, "src")
+  options%ignore_hidden = .true.
+  options%emit_directory_events = .false.
+  call set_ignore_prefixes(options, [character(len=9) :: "src/.git"])
+  call init_watch(session, "src", options)
   events = poll_watch(session)
   print "(I0)", size(events)
 end program demo_watch
@@ -111,6 +118,7 @@ That is the baseline verification command locally and in CI.
 - focused on reusable watch primitives, not a full dev-loop tool
 - polling will be the first dependable backend; native backends can come later without changing the high-level surface
 - the current polling backend reports event batches and suppresses directory-only metadata churn, so nested file activity is the signal that rises to the top
+- current shaping controls include `ignore_hidden`, ignored path prefixes, and `emit_directory_events`
 
 ## License
 
