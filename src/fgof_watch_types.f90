@@ -23,6 +23,7 @@ module fgof_watch_types
 
   type :: watch_options
     integer :: poll_interval_ms = 250
+    integer :: debounce_polls = 0
     logical :: recursive = .true.
     logical :: ignore_hidden = .false.
     logical :: emit_directory_events = .true.
@@ -43,5 +44,7 @@ module fgof_watch_types
     type(watch_options) :: options
     logical :: active = .false.
     type(watch_entry), allocatable :: entries(:)
+    type(watch_event), allocatable :: pending_events(:)
+    integer, allocatable :: pending_remaining(:)
   end type watch_session
 end module fgof_watch_types

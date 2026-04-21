@@ -50,10 +50,14 @@ contains
 
     if (.not. session%active) then
       allocate(session%entries(0))
+      allocate(session%pending_events(0))
+      allocate(session%pending_remaining(0))
       return
     end if
 
     call collect_snapshot(root, session%options, session%entries)
+    allocate(session%pending_events(0))
+    allocate(session%pending_remaining(0))
   end subroutine init_watch
 
   function poll_watch(session) result(events)
@@ -68,6 +72,9 @@ contains
 
     call collect_snapshot(session%root, session%options, current_entries)
     events = diff_snapshots(session%entries, current_entries, session%options)
+    if (session%options%debounce_polls > 0) then
+      events = debounce_event_batch(session, events)
+    end if
     call move_alloc(current_entries, session%entries)
   end function poll_watch
 
@@ -80,6 +87,14 @@ contains
 
     if (allocated(session%entries)) then
       deallocate(session%entries)
+    end if
+
+    if (allocated(session%pending_events)) then
+      deallocate(session%pending_events)
+    end if
+
+    if (allocated(session%pending_remaining)) then
+      deallocate(session%pending_remaining)
     end if
 
     session%options = watch_options()
@@ -362,6 +377,263 @@ contains
     end do
   end function build_event_batch
 
+  function debounce_event_batch(session, raw_events) result(events)
+    type(watch_session), intent(inout) :: session
+    type(watch_event), intent(in) :: raw_events(:)
+    type(watch_event), allocatable :: events(:)
+    logical, allocatable :: touched(:)
+    integer :: i
+    integer :: index
+
+    if (.not. allocated(session%pending_events)) allocate(session%pending_events(0))
+    if (.not. allocated(session%pending_remaining)) allocate(session%pending_remaining(0))
+
+    allocate(touched(size(session%pending_events)))
+    touched = .false.
+
+    do i = 1, size(raw_events)
+      index = find_related_pending_event(session%pending_events, raw_events(i))
+      if (index > 0) then
+        call merge_pending_event(session, index, raw_events(i))
+        if (index <= size(session%pending_events)) then
+          touched = resize_logical_flags(touched, size(session%pending_events))
+          touched(index) = .true.
+        end if
+      else
+        call append_pending_event(session, raw_events(i), session%options%debounce_polls)
+        touched = resize_logical_flags(touched, size(session%pending_events))
+        touched(size(touched)) = .true.
+      end if
+    end do
+
+    do i = 1, size(session%pending_remaining)
+      if (touched(i)) cycle
+      session%pending_remaining(i) = session%pending_remaining(i) - 1
+    end do
+
+    call emit_ready_events(session, events)
+  end function debounce_event_batch
+
+  subroutine merge_pending_event(session, index, incoming)
+    type(watch_session), intent(inout) :: session
+    integer, intent(in) :: index
+    type(watch_event), intent(in) :: incoming
+    type(watch_event) :: merged
+    logical :: drop_pending
+
+    call merge_event_pair(session%pending_events(index), incoming, merged, drop_pending)
+    if (drop_pending) then
+      call remove_pending_event(session, index)
+      return
+    end if
+
+    session%pending_events(index) = merged
+    session%pending_remaining(index) = session%options%debounce_polls
+  end subroutine merge_pending_event
+
+  subroutine merge_event_pair(existing, incoming, merged, drop_pending)
+    type(watch_event), intent(in) :: existing
+    type(watch_event), intent(in) :: incoming
+    type(watch_event), intent(out) :: merged
+    logical, intent(out) :: drop_pending
+
+    drop_pending = .false.
+    merged = incoming
+
+    select case (existing%kind)
+    case (FGOF_WATCH_EVT_CREATED)
+      select case (incoming%kind)
+      case (FGOF_WATCH_EVT_CREATED)
+        merged = incoming
+      case (FGOF_WATCH_EVT_MODIFIED)
+        merged = existing
+      case (FGOF_WATCH_EVT_REMOVED)
+        if (incoming%path == existing%path) then
+          drop_pending = .true.
+        else
+          merged = incoming
+        end if
+      case (FGOF_WATCH_EVT_MOVED)
+        if (incoming%previous_path == existing%path) then
+          merged = existing
+          merged%path = incoming%path
+        else
+          merged = incoming
+        end if
+      end select
+
+    case (FGOF_WATCH_EVT_MODIFIED)
+      select case (incoming%kind)
+      case (FGOF_WATCH_EVT_CREATED)
+        merged = incoming
+      case (FGOF_WATCH_EVT_MODIFIED)
+        merged = incoming
+      case (FGOF_WATCH_EVT_REMOVED)
+        merged = incoming
+      case (FGOF_WATCH_EVT_MOVED)
+        merged = incoming
+      end select
+
+    case (FGOF_WATCH_EVT_REMOVED)
+      select case (incoming%kind)
+      case (FGOF_WATCH_EVT_CREATED)
+        if (incoming%path == existing%path) then
+          merged%kind = FGOF_WATCH_EVT_MODIFIED
+          merged%path = incoming%path
+          merged%previous_path = ""
+          merged%is_directory = incoming%is_directory
+        else
+          merged = incoming
+        end if
+      case default
+        merged = incoming
+      end select
+
+    case (FGOF_WATCH_EVT_MOVED)
+      select case (incoming%kind)
+      case (FGOF_WATCH_EVT_MODIFIED)
+        if (incoming%path == existing%path) then
+          merged = existing
+        else
+          merged = incoming
+        end if
+      case (FGOF_WATCH_EVT_REMOVED)
+        if (incoming%path == existing%path) then
+          merged = incoming
+        else
+          merged = incoming
+        end if
+      case (FGOF_WATCH_EVT_MOVED)
+        if (incoming%previous_path == existing%path) then
+          merged = existing
+          merged%path = incoming%path
+        else
+          merged = incoming
+        end if
+      case (FGOF_WATCH_EVT_CREATED)
+        merged = incoming
+      end select
+    end select
+  end subroutine merge_event_pair
+
+  subroutine emit_ready_events(session, events)
+    type(watch_session), intent(inout) :: session
+    type(watch_event), allocatable, intent(out) :: events(:)
+    type(watch_event), allocatable :: ready(:)
+    integer :: i
+
+    allocate(ready(0))
+    i = 1
+    do while (i <= size(session%pending_events))
+      if (session%pending_remaining(i) > 0) then
+        i = i + 1
+        cycle
+      end if
+
+      call append_event_object(ready, session%pending_events(i))
+      call remove_pending_event(session, i)
+    end do
+
+    call move_alloc(ready, events)
+  end subroutine emit_ready_events
+
+  subroutine append_pending_event(session, event, remaining)
+    type(watch_session), intent(inout) :: session
+    type(watch_event), intent(in) :: event
+    integer, intent(in) :: remaining
+    type(watch_event), allocatable :: grown_events(:)
+    integer, allocatable :: grown_remaining(:)
+    integer :: n
+
+    n = size(session%pending_events)
+    allocate(grown_events(n + 1))
+    allocate(grown_remaining(n + 1))
+
+    if (n > 0) then
+      grown_events(1:n) = session%pending_events
+      grown_remaining(1:n) = session%pending_remaining
+    end if
+
+    grown_events(n + 1) = event
+    grown_remaining(n + 1) = remaining
+
+    call move_alloc(grown_events, session%pending_events)
+    call move_alloc(grown_remaining, session%pending_remaining)
+  end subroutine append_pending_event
+
+  subroutine remove_pending_event(session, index)
+    type(watch_session), intent(inout) :: session
+    integer, intent(in) :: index
+    type(watch_event), allocatable :: kept_events(:)
+    integer, allocatable :: kept_remaining(:)
+    integer :: n
+
+    n = size(session%pending_events)
+    if (index < 1 .or. index > n) return
+
+    allocate(kept_events(n - 1))
+    allocate(kept_remaining(n - 1))
+
+    if (index > 1) then
+      kept_events(1:index - 1) = session%pending_events(1:index - 1)
+      kept_remaining(1:index - 1) = session%pending_remaining(1:index - 1)
+    end if
+
+    if (index < n) then
+      kept_events(index:n - 1) = session%pending_events(index + 1:n)
+      kept_remaining(index:n - 1) = session%pending_remaining(index + 1:n)
+    end if
+
+    call move_alloc(kept_events, session%pending_events)
+    call move_alloc(kept_remaining, session%pending_remaining)
+  end subroutine remove_pending_event
+
+  integer function find_related_pending_event(pending_events, incoming) result(index_found)
+    type(watch_event), intent(in) :: pending_events(:)
+    type(watch_event), intent(in) :: incoming
+    integer :: i
+
+    index_found = 0
+    do i = 1, size(pending_events)
+      if (events_related(pending_events(i), incoming)) then
+        index_found = i
+        return
+      end if
+    end do
+  end function find_related_pending_event
+
+  logical function events_related(left, right) result(related)
+    type(watch_event), intent(in) :: left
+    type(watch_event), intent(in) :: right
+
+    related = .false.
+    if (same_nonempty_text(left%path, right%path)) related = .true.
+    if (same_nonempty_text(left%path, right%previous_path)) related = .true.
+    if (same_nonempty_text(left%previous_path, right%path)) related = .true.
+    if (same_nonempty_text(left%previous_path, right%previous_path)) related = .true.
+  end function events_related
+
+  logical function same_nonempty_text(left, right) result(matches)
+    character(len=*), intent(in) :: left
+    character(len=*), intent(in) :: right
+
+    matches = .false.
+    if (len(left) == 0 .or. len(right) == 0) return
+    matches = (left == right)
+  end function same_nonempty_text
+
+  function resize_logical_flags(flags, new_size) result(resized)
+    logical, intent(in) :: flags(:)
+    integer, intent(in) :: new_size
+    logical, allocatable :: resized(:)
+    integer :: copy_count
+
+    allocate(resized(new_size))
+    resized = .false.
+    copy_count = min(size(flags), new_size)
+    if (copy_count > 0) resized(1:copy_count) = flags(1:copy_count)
+  end function resize_logical_flags
+
   logical function entry_changed(previous_entry, current_entry) result(changed)
     type(watch_entry), intent(in) :: previous_entry
     type(watch_entry), intent(in) :: current_entry
@@ -523,6 +795,19 @@ contains
     end if
     call move_alloc(grown, events)
   end subroutine append_event
+
+  subroutine append_event_object(events, event)
+    type(watch_event), allocatable, intent(inout) :: events(:)
+    type(watch_event), intent(in) :: event
+    type(watch_event), allocatable :: grown(:)
+    integer :: n
+
+    n = size(events)
+    allocate(grown(n + 1))
+    if (n > 0) grown(1:n) = events
+    grown(n + 1) = event
+    call move_alloc(grown, events)
+  end subroutine append_event_object
 
   subroutine sort_entries(entries)
     type(watch_entry), intent(inout) :: entries(:)
