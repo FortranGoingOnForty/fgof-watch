@@ -37,6 +37,7 @@ Implemented today:
 - optional suppression of directory create or remove noise
 - debounce-based quieting for bursty paths
 - snapshot-failure reporting without false remove storms
+- ignored and hidden subtrees pruned before deep traversal
 - smoke-test and change-detection coverage with CI wiring
 
 Still to implement:
@@ -128,6 +129,7 @@ That is the baseline verification command locally and in CI.
 - the current polling backend reports event batches and suppresses directory-only metadata churn, so nested file activity is the signal that rises to the top
 - current shaping controls include `debounce_polls`, `ignore_hidden`, ignored path prefixes, and `emit_directory_events`
 - snapshot read failures preserve the previous watch state, emit no events for that poll, and surface detail through `watch_session%last_error_code` and `watch_session%last_error_message`
+- hidden and ignored prefixes are pruned during snapshot collection, so excluded subtrees do not need to be fully scanned first
 
 ## License
 
