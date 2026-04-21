@@ -16,6 +16,8 @@ module fgof_watch
   public :: init_watch
   public :: poll_watch
   public :: reset_watch
+  public :: clear_ignore_prefixes
+  public :: set_ignore_prefixes
 
   interface
     integer(c_int) function fgof_watch_collect_snapshot_c(root, recursive, buffer, buffer_len) bind(C, name="fgof_watch_collect_snapshot")
@@ -51,7 +53,7 @@ contains
       return
     end if
 
-    call collect_snapshot(root, session%options%recursive, session%entries)
+    call collect_snapshot(root, session%options, session%entries)
   end subroutine init_watch
 
   function poll_watch(session) result(events)
@@ -64,7 +66,7 @@ contains
       return
     end if
 
-    call collect_snapshot(session%root, session%options%recursive, current_entries)
+    call collect_snapshot(session%root, session%options, current_entries)
     events = diff_snapshots(session%entries, current_entries)
     call move_alloc(current_entries, session%entries)
   end function poll_watch
@@ -84,9 +86,33 @@ contains
     session%active = .false.
   end subroutine reset_watch
 
-  subroutine collect_snapshot(root, recursive, entries)
+  subroutine set_ignore_prefixes(options, prefixes)
+    type(watch_options), intent(inout) :: options
+    character(len=*), intent(in) :: prefixes(:)
+    integer :: i
+    integer :: width
+
+    call clear_ignore_prefixes(options)
+    if (size(prefixes) == 0) return
+
+    width = max(1, max_string_length(prefixes))
+    allocate(character(len=width) :: options%ignore_prefixes(size(prefixes)))
+    do i = 1, size(prefixes)
+      options%ignore_prefixes(i) = prefixes(i)
+    end do
+  end subroutine set_ignore_prefixes
+
+  subroutine clear_ignore_prefixes(options)
+    type(watch_options), intent(inout) :: options
+
+    if (allocated(options%ignore_prefixes)) then
+      deallocate(options%ignore_prefixes)
+    end if
+  end subroutine clear_ignore_prefixes
+
+  subroutine collect_snapshot(root, options, entries)
     character(len=*), intent(in) :: root
-    logical, intent(in) :: recursive
+    type(watch_options), intent(in) :: options
     type(watch_entry), allocatable, intent(out) :: entries(:)
     type(c_ptr) :: raw_ptr
     integer(c_int) :: status
@@ -99,7 +125,7 @@ contains
     raw_ptr = c_null_ptr
     raw_len = 0_c_size_t
 
-    status = fgof_watch_collect_snapshot_c(c_root, merge(1_c_int, 0_c_int, recursive), raw_ptr, raw_len)
+    status = fgof_watch_collect_snapshot_c(c_root, merge(1_c_int, 0_c_int, options%recursive), raw_ptr, raw_len)
     if (status /= 0_c_int) then
       allocate(entries(0))
       if (c_associated(raw_ptr)) call fgof_watch_free_buffer_c(raw_ptr)
@@ -117,8 +143,126 @@ contains
     call fgof_watch_free_buffer_c(raw_ptr)
 
     call parse_snapshot_text(text, entries)
+    call filter_entries(root, options, entries)
     call sort_entries(entries)
   end subroutine collect_snapshot
+
+  subroutine filter_entries(root, options, entries)
+    character(len=*), intent(in) :: root
+    type(watch_options), intent(in) :: options
+    type(watch_entry), allocatable, intent(inout) :: entries(:)
+    type(watch_entry), allocatable :: filtered(:)
+    integer :: i
+
+    allocate(filtered(0))
+    do i = 1, size(entries)
+      if (entry_is_ignored(root, options, entries(i))) cycle
+      call append_entry(filtered, entries(i))
+    end do
+    call move_alloc(filtered, entries)
+  end subroutine filter_entries
+
+  logical function entry_is_ignored(root, options, entry) result(ignored)
+    character(len=*), intent(in) :: root
+    type(watch_options), intent(in) :: options
+    type(watch_entry), intent(in) :: entry
+
+    ignored = .false.
+
+    if (options%ignore_hidden) then
+      if (contains_hidden_segment(path_after_root(root, entry%path))) then
+        ignored = .true.
+        return
+      end if
+    end if
+
+    if (path_matches_ignore_prefix(options, entry%path)) then
+      ignored = .true.
+    end if
+  end function entry_is_ignored
+
+  logical function path_matches_ignore_prefix(options, path) result(matches)
+    type(watch_options), intent(in) :: options
+    character(len=*), intent(in) :: path
+    integer :: i
+    character(len=:), allocatable :: prefix
+
+    matches = .false.
+    if (.not. allocated(options%ignore_prefixes)) return
+
+    do i = 1, size(options%ignore_prefixes)
+      prefix = trim(options%ignore_prefixes(i))
+      if (len(prefix) == 0) cycle
+      if (path == prefix) then
+        matches = .true.
+        return
+      end if
+      if (len(path) > len(prefix)) then
+        if (path(1:len(prefix)) == prefix .and. path(len(prefix) + 1:len(prefix) + 1) == "/") then
+          matches = .true.
+          return
+        end if
+      end if
+    end do
+  end function path_matches_ignore_prefix
+
+  function path_after_root(root, path) result(relative)
+    character(len=*), intent(in) :: root
+    character(len=*), intent(in) :: path
+    character(len=:), allocatable :: relative
+
+    if (path == root) then
+      relative = basename_text(root)
+      return
+    end if
+
+    if (len(path) > len(root)) then
+      if (path(1:len(root)) == root .and. path(len(root) + 1:len(root) + 1) == "/") then
+        relative = path(len(root) + 2:)
+        return
+      end if
+    end if
+
+    relative = path
+  end function path_after_root
+
+  logical function contains_hidden_segment(path) result(has_hidden)
+    character(len=*), intent(in) :: path
+    integer :: i
+    integer :: start
+    integer :: n
+
+    has_hidden = .false.
+    n = len(path)
+    if (n == 0) return
+
+    start = 1
+    do i = 1, n + 1
+      if (i <= n .and. path(i:i) /= "/") cycle
+      if (i > start) then
+        if (path(start:start) == ".") then
+          has_hidden = .true.
+          return
+        end if
+      end if
+      start = i + 1
+    end do
+  end function contains_hidden_segment
+
+  function basename_text(path) result(name)
+    character(len=*), intent(in) :: path
+    character(len=:), allocatable :: name
+    integer :: i
+
+    do i = len(path), 1, -1
+      if (path(i:i) == "/") then
+        name = path(i + 1:)
+        return
+      end if
+    end do
+
+    name = path
+  end function basename_text
 
   function diff_snapshots(previous_entries, current_entries) result(events)
     type(watch_entry), intent(in) :: previous_entries(:)
@@ -424,6 +568,16 @@ contains
 
     is_less = (len(left) < len(right))
   end function entry_less
+
+  integer function max_string_length(values) result(max_len)
+    character(len=*), intent(in) :: values(:)
+    integer :: i
+
+    max_len = 1
+    do i = 1, size(values)
+      max_len = max(max_len, len(values(i)))
+    end do
+  end function max_string_length
 
   logical function event_less(left, right) result(is_less)
     type(watch_event), intent(in) :: left

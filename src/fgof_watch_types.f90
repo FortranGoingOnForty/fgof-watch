@@ -24,6 +24,8 @@ module fgof_watch_types
   type :: watch_options
     integer :: poll_interval_ms = 250
     logical :: recursive = .true.
+    logical :: ignore_hidden = .false.
+    character(len=:), allocatable :: ignore_prefixes(:)
   end type watch_options
 
   type :: watch_entry
