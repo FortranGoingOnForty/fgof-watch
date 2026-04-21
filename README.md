@@ -36,6 +36,7 @@ Implemented today:
 - hidden-path filtering and ignored-prefix filtering
 - optional suppression of directory create or remove noise
 - debounce-based quieting for bursty paths
+- snapshot-failure reporting without false remove storms
 - smoke-test and change-detection coverage with CI wiring
 
 Still to implement:
@@ -79,6 +80,11 @@ Event constants:
 - `FGOF_WATCH_EVT_REMOVED`
 - `FGOF_WATCH_EVT_MOVED`
 
+Error constants:
+
+- `FGOF_WATCH_ERR_NONE`
+- `FGOF_WATCH_ERR_SNAPSHOT_FAILED`
+
 ## Quick Start
 
 ```fortran
@@ -121,6 +127,7 @@ That is the baseline verification command locally and in CI.
 - polling will be the first dependable backend; native backends can come later without changing the high-level surface
 - the current polling backend reports event batches and suppresses directory-only metadata churn, so nested file activity is the signal that rises to the top
 - current shaping controls include `debounce_polls`, `ignore_hidden`, ignored path prefixes, and `emit_directory_events`
+- snapshot read failures preserve the previous watch state, emit no events for that poll, and surface detail through `watch_session%last_error_code` and `watch_session%last_error_message`
 
 ## License
 
