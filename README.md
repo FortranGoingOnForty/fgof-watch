@@ -24,7 +24,7 @@ Future scope:
 
 ## Status
 
-Initial scaffold is in place.
+Polling-first `v0.1.0` candidate is in place.
 
 Implemented today:
 
@@ -38,6 +38,7 @@ Implemented today:
 - debounce-based quieting for bursty paths
 - snapshot-failure reporting without false remove storms
 - ignored and hidden subtrees pruned before deep traversal
+- literal path bytes preserved across snapshot transport, including tabs and newlines
 - smoke-test and change-detection coverage with CI wiring
 
 Still to implement:
