@@ -14,6 +14,101 @@ typedef struct {
     size_t cap;
 } fgof_watch_buffer;
 
+static const char *fgof_watch_basename(const char *path) {
+    const char *slash;
+
+    slash = strrchr(path, '/');
+    if (slash == NULL) {
+        return path;
+    }
+    return slash + 1;
+}
+
+static const char *fgof_watch_relative_path(const char *root, const char *path) {
+    size_t root_len;
+
+    if (strcmp(path, root) == 0) {
+        return fgof_watch_basename(root);
+    }
+
+    root_len = strlen(root);
+    if (strncmp(path, root, root_len) == 0 && path[root_len] == '/') {
+        return path + root_len + 1;
+    }
+
+    return path;
+}
+
+static int fgof_watch_contains_hidden_segment(const char *path) {
+    const char *segment_start;
+    const char *cursor;
+
+    if (path == NULL || path[0] == '\0') {
+        return 0;
+    }
+
+    segment_start = path;
+    for (cursor = path; ; ++cursor) {
+        if (*cursor != '/' && *cursor != '\0') {
+            continue;
+        }
+        if (cursor > segment_start && segment_start[0] == '.') {
+            return 1;
+        }
+        if (*cursor == '\0') {
+            break;
+        }
+        segment_start = cursor + 1;
+    }
+
+    return 0;
+}
+
+static int fgof_watch_matches_prefix(const char *path, int prefix_count, int prefix_stride, const char *prefixes) {
+    int i;
+    const char *prefix;
+    size_t prefix_len;
+
+    if (prefix_count <= 0 || prefix_stride <= 0 || prefixes == NULL) {
+        return 0;
+    }
+
+    for (i = 0; i < prefix_count; ++i) {
+        prefix = prefixes + (i * prefix_stride);
+        prefix_len = strlen(prefix);
+        if (prefix_len == 0) {
+            continue;
+        }
+        if (strcmp(path, prefix) == 0) {
+            return 1;
+        }
+        if (strncmp(path, prefix, prefix_len) == 0 && path[prefix_len] == '/') {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int fgof_watch_should_ignore(
+    const char *root,
+    const char *path,
+    int ignore_hidden,
+    int prefix_count,
+    int prefix_stride,
+    const char *prefixes
+) {
+    if (ignore_hidden && fgof_watch_contains_hidden_segment(fgof_watch_relative_path(root, path))) {
+        return 1;
+    }
+
+    if (fgof_watch_matches_prefix(path, prefix_count, prefix_stride, prefixes)) {
+        return 1;
+    }
+
+    return 0;
+}
+
 static int fgof_watch_append_text(fgof_watch_buffer *buffer, const char *text, size_t text_len) {
     char *grown;
     size_t needed;
@@ -86,10 +181,24 @@ static int fgof_watch_append_entry(fgof_watch_buffer *buffer, const char *path, 
     return fgof_watch_append_text(buffer, line, (size_t)line_len);
 }
 
-static int fgof_watch_visit(const char *path, int recursive, int depth, fgof_watch_buffer *buffer) {
+static int fgof_watch_visit(
+    const char *root,
+    const char *path,
+    int recursive,
+    int depth,
+    int ignore_hidden,
+    int prefix_count,
+    int prefix_stride,
+    const char *prefixes,
+    fgof_watch_buffer *buffer
+) {
     DIR *dirp;
     struct dirent *entry;
     struct stat st;
+
+    if (fgof_watch_should_ignore(root, path, ignore_hidden, prefix_count, prefix_stride, prefixes)) {
+        return 0;
+    }
 
     if (lstat(path, &st) != 0) {
         if (errno == ENOENT || errno == ENOTDIR) {
@@ -135,7 +244,17 @@ static int fgof_watch_visit(const char *path, int recursive, int depth, fgof_wat
         }
 
         snprintf(child, child_len, "%s/%s", path, entry->d_name);
-        status = fgof_watch_visit(child, recursive, depth + 1, buffer);
+        status = fgof_watch_visit(
+            root,
+            child,
+            recursive,
+            depth + 1,
+            ignore_hidden,
+            prefix_count,
+            prefix_stride,
+            prefixes,
+            buffer
+        );
         free(child);
 
         if (status != 0) {
@@ -148,7 +267,16 @@ static int fgof_watch_visit(const char *path, int recursive, int depth, fgof_wat
     return 0;
 }
 
-int fgof_watch_collect_snapshot(const char *root, int recursive, char **buffer_out, size_t *buffer_len_out) {
+int fgof_watch_collect_snapshot(
+    const char *root,
+    int recursive,
+    int ignore_hidden,
+    int prefix_count,
+    int prefix_stride,
+    const char *prefixes,
+    char **buffer_out,
+    size_t *buffer_len_out
+) {
     fgof_watch_buffer buffer;
     int status;
 
@@ -163,7 +291,17 @@ int fgof_watch_collect_snapshot(const char *root, int recursive, char **buffer_o
         return 0;
     }
 
-    status = fgof_watch_visit(root, recursive != 0, 0, &buffer);
+    status = fgof_watch_visit(
+        root,
+        root,
+        recursive != 0,
+        0,
+        ignore_hidden != 0,
+        prefix_count,
+        prefix_stride,
+        prefixes,
+        &buffer
+    );
     if (status != 0) {
         free(buffer.data);
         return status;

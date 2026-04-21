@@ -22,10 +22,14 @@ module fgof_watch
   public :: set_ignore_prefixes
 
   interface
-    integer(c_int) function fgof_watch_collect_snapshot_c(root, recursive, buffer, buffer_len) bind(C, name="fgof_watch_collect_snapshot")
+    integer(c_int) function fgof_watch_collect_snapshot_c(root, recursive, ignore_hidden, prefix_count, prefix_stride, prefixes, buffer, buffer_len) bind(C, name="fgof_watch_collect_snapshot")
       import :: c_char, c_int, c_ptr, c_size_t
       character(kind=c_char), intent(in) :: root(*)
       integer(c_int), value :: recursive
+      integer(c_int), value :: ignore_hidden
+      integer(c_int), value :: prefix_count
+      integer(c_int), value :: prefix_stride
+      character(kind=c_char), intent(in) :: prefixes(*)
       type(c_ptr), intent(out) :: buffer
       integer(c_size_t), intent(out) :: buffer_len
     end function fgof_watch_collect_snapshot_c
@@ -179,16 +183,29 @@ contains
     integer(c_int) :: status
     integer(c_size_t) :: raw_len
     character(kind=c_char), allocatable :: c_root(:)
+    character(kind=c_char), allocatable :: c_prefixes(:)
+    integer(c_int) :: prefix_count
+    integer(c_int) :: prefix_stride
     character(kind=c_char), pointer :: raw_chars(:)
     character(len=:), allocatable :: text
 
     c_root = to_c_string(root)
+    call pack_ignore_prefixes(options, prefix_count, prefix_stride, c_prefixes)
     raw_ptr = c_null_ptr
     raw_len = 0_c_size_t
     status_code = 0
     status_message = ""
 
-    status = fgof_watch_collect_snapshot_c(c_root, merge(1_c_int, 0_c_int, options%recursive), raw_ptr, raw_len)
+    status = fgof_watch_collect_snapshot_c( &
+      c_root, &
+      merge(1_c_int, 0_c_int, options%recursive), &
+      merge(1_c_int, 0_c_int, options%ignore_hidden), &
+      prefix_count, &
+      prefix_stride, &
+      c_prefixes, &
+      raw_ptr, &
+      raw_len &
+    )
     if (status /= 0_c_int) then
       allocate(entries(0))
       if (c_associated(raw_ptr)) call fgof_watch_free_buffer_c(raw_ptr)
@@ -211,6 +228,45 @@ contains
     call filter_entries(root, options, entries)
     call sort_entries(entries)
   end subroutine collect_snapshot
+
+  subroutine pack_ignore_prefixes(options, count, stride, buffer)
+    type(watch_options), intent(in) :: options
+    integer(c_int), intent(out) :: count
+    integer(c_int), intent(out) :: stride
+    character(kind=c_char), allocatable, intent(out) :: buffer(:)
+    integer :: i
+    integer :: j
+    integer :: width
+    integer :: offset
+
+    if (.not. allocated(options%ignore_prefixes)) then
+      count = 0_c_int
+      stride = 0_c_int
+      buffer = empty_c_string()
+      return
+    end if
+
+    if (size(options%ignore_prefixes) == 0) then
+      count = 0_c_int
+      stride = 0_c_int
+      buffer = empty_c_string()
+      return
+    end if
+
+    width = max_string_length(options%ignore_prefixes) + 1
+    count = int(size(options%ignore_prefixes), c_int)
+    stride = int(width, c_int)
+    allocate(buffer(size(options%ignore_prefixes) * width))
+    buffer = c_null_char
+
+    do i = 1, size(options%ignore_prefixes)
+      offset = (i - 1) * width
+      do j = 1, len_trim(options%ignore_prefixes(i))
+        buffer(offset + j) = options%ignore_prefixes(i)(j:j)
+      end do
+      buffer(offset + len_trim(options%ignore_prefixes(i)) + 1) = c_null_char
+    end do
+  end subroutine pack_ignore_prefixes
 
   subroutine filter_entries(root, options, entries)
     character(len=*), intent(in) :: root
@@ -819,6 +875,13 @@ contains
     end do
     buf(n + 1) = c_null_char
   end function to_c_string
+
+  function empty_c_string() result(buf)
+    character(kind=c_char), allocatable :: buf(:)
+
+    allocate(buf(1))
+    buf(1) = c_null_char
+  end function empty_c_string
 
   subroutine append_entry(entries, entry)
     type(watch_entry), allocatable, intent(inout) :: entries(:)
