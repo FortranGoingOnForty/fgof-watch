@@ -10,6 +10,7 @@ module fgof_watch_types
   integer, parameter, public :: FGOF_WATCH_EVT_MOVED = 4
 
   public :: watch_event
+  public :: watch_entry
   public :: watch_options
   public :: watch_session
 
