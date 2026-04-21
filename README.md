@@ -29,15 +29,17 @@ Initial scaffold is in place.
 Implemented today:
 
 - public `fgof_watch` and `fgof_watch_types` modules
-- baseline `watch_session`, `watch_options`, and `watch_event` types
-- minimal initialization, reset, and polling helpers
-- smoke-test coverage and CI wiring
+- polling-backed `watch_session`, `watch_options`, and `watch_event` types
+- initialization, reset, and batch polling helpers
+- normalized create, modify, remove, and move events
+- recursive and nonrecursive polling behavior
+- smoke-test and change-detection coverage with CI wiring
 
 Still to implement:
 
-- real directory snapshots and change detection
-- recursive traversal and filtering
-- event shaping, debounce, and native backend strategy
+- filtering and ignore rules
+- debounce and event coalescing helpers
+- native backend strategy
 
 ## Why Use It
 
@@ -55,6 +57,7 @@ Primary modules:
 Public types:
 
 - `watch_event`
+- `watch_entry`
 - `watch_options`
 - `watch_session`
 
@@ -64,6 +67,14 @@ Current public procedures:
 - `poll_watch`
 - `reset_watch`
 
+Event constants:
+
+- `FGOF_WATCH_EVT_NONE`
+- `FGOF_WATCH_EVT_CREATED`
+- `FGOF_WATCH_EVT_MODIFIED`
+- `FGOF_WATCH_EVT_REMOVED`
+- `FGOF_WATCH_EVT_MOVED`
+
 ## Quick Start
 
 ```fortran
@@ -72,12 +83,12 @@ program demo_watch
   use fgof_watch_types, only : watch_event, watch_session
   implicit none
 
-  type(watch_event) :: event
+  type(watch_event), allocatable :: events(:)
   type(watch_session) :: session
 
   call init_watch(session, "src")
-  event = poll_watch(session)
-  print "(A)", event%path
+  events = poll_watch(session)
+  print "(I0)", size(events)
 end program demo_watch
 ```
 
@@ -99,6 +110,7 @@ That is the baseline verification command locally and in CI.
 - intended to stay independently versioned and releasable
 - focused on reusable watch primitives, not a full dev-loop tool
 - polling will be the first dependable backend; native backends can come later without changing the high-level surface
+- the current polling backend reports event batches and suppresses directory-only metadata churn, so nested file activity is the signal that rises to the top
 
 ## License
 
