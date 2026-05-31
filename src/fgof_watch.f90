@@ -22,7 +22,9 @@ module fgof_watch
   public :: set_ignore_prefixes
 
   interface
-    integer(c_int) function fgof_watch_collect_snapshot_c(root, recursive, ignore_hidden, prefix_count, prefix_stride, prefixes, buffer, buffer_len) bind(C, name="fgof_watch_collect_snapshot")
+    integer(c_int) function fgof_watch_collect_snapshot_c( &
+        root, recursive, ignore_hidden, prefix_count, prefix_stride, prefixes, buffer, buffer_len) &
+        bind(C, name="fgof_watch_collect_snapshot")
       import :: c_char, c_int, c_ptr, c_size_t
       character(kind=c_char), intent(in) :: root(*)
       integer(c_int), value :: recursive
@@ -83,6 +85,7 @@ contains
     integer :: snapshot_status
     character(len=:), allocatable :: snapshot_message
 
+    allocate(current_entries(0))
     if (.not. session%active) then
       allocate(events(0))
       return
@@ -193,6 +196,8 @@ contains
     integer(c_int) :: prefix_stride
     character(kind=c_char), pointer :: raw_chars(:)
 
+    allocate(c_root(0))
+    allocate(c_prefixes(0))
     c_root = to_c_string(root)
     call pack_ignore_prefixes(options, prefix_count, prefix_stride, c_prefixes)
     raw_ptr = c_null_ptr
